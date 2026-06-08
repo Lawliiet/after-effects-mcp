@@ -208,6 +208,12 @@ server.tool(
       "getPropertyValue",
       "setPropertyValue",
       "setPropertyKeyframe",
+      "listPropertyKeyframes",
+      "updateKeyframe",
+      "removeKeyframe",
+      "setKeyframeEase",
+      "setKeyframeInterpolation",
+      "setSpatialTangents",
       "setPropertyExpression",
       "getLayerParent",
       "setLayerParent",
@@ -392,24 +398,19 @@ To use this integration with After Effects, follow these steps:
    - Use the \`run-script\` tool to queue a command
    - The Auto panel will detect and run the command automatically
    - Results will be saved to a temp file
+   - MCP clients can also inspect each tool's built-in description and typed parameter schema directly
 
 5. **Get results through MCP**
    - After a command is executed, use the \`get-results\` tool
    - This will retrieve the results from After Effects
 
-Available scripts:
-- getProjectInfo: Information about the current project
-- listCompositions: List all compositions in the project
-- getLayerInfo: Information about layers in the active composition
-- createComposition: Create a new composition
-- createTextLayer: Create a new text layer
-- createShapeLayer: Create a new shape layer
-- createSolidLayer: Create a new solid layer
-- setLayerProperties: Set properties for a layer
-- setLayerKeyframe: Set a keyframe for a layer property
-- setLayerExpression: Set an expression for a layer property
-- applyEffect: Apply an effect to a layer
-- applyEffectTemplate: Apply a predefined effect template to a layer
+Tool categories:
+- Project/composition: list compositions, create compositions, set composition properties, precompose layers
+- Layer editing: create layers, set layer properties, parent/unparent layers, duplicate/delete layers, masks
+- Property editing: inspect properties, read/set values, expressions, expression links
+- Keyframes: create, list, update, remove, ease, interpolation, and spatial tangents
+- Essential Graphics: add supported properties or media-replacement layers, list controllers, rename controllers
+- Effects: apply effects and templates
 
 Effect Templates:
 - gaussian-blur: Simple Gaussian blur effect
@@ -553,6 +554,29 @@ const KeyframeValueSchema = z
   .unknown()
   .describe(
     "The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)",
+  );
+
+const KeyframeIdentifierSchema = {
+  keyIndex: z
+    .number()
+    .int()
+    .positive()
+    .describe("1-based keyframe index on the targeted property."),
+};
+
+const KeyframeEaseEntrySchema = z.object({
+  speed: z.number().describe("Keyframe ease speed value."),
+  influence: z
+    .number()
+    .min(0.1)
+    .max(100)
+    .describe("Keyframe ease influence in the range 0.1 to 100."),
+});
+
+const KeyframeEaseConfigSchema = z
+  .union([KeyframeEaseEntrySchema, z.array(KeyframeEaseEntrySchema).min(1)])
+  .describe(
+    "Either one ease object to reuse across dimensions or an array with one entry per property dimension.",
   );
 
 server.tool(
@@ -699,6 +723,259 @@ server.tool(
           {
             type: "text",
             text: `Error setting property keyframe: ${String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "listPropertyKeyframes",
+  "List all keyframes for a property, including timing, value, interpolation, and ease metadata.",
+  {
+    ...LayerIdentifierSchema,
+    ...PropertyLocatorSchema,
+  },
+  async (parameters) => {
+    try {
+      clearResultsFile();
+      writeCommandFile("listPropertyKeyframes", parameters);
+      const result = await waitForBridgeResult(
+        "listPropertyKeyframes",
+        7000,
+        250,
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error listing property keyframes: ${String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "updateKeyframe",
+  "Update an existing keyframe's value and optionally move it to a new time.",
+  {
+    ...LayerIdentifierSchema,
+    ...PropertyLocatorSchema,
+    ...KeyframeIdentifierSchema,
+    timeInSeconds: z
+      .number()
+      .optional()
+      .describe("Optional new time in seconds for the keyframe."),
+    value: z
+      .unknown()
+      .optional()
+      .describe("Optional new value for the keyframe."),
+  },
+  async (parameters) => {
+    try {
+      clearResultsFile();
+      writeCommandFile("updateKeyframe", parameters);
+      const result = await waitForBridgeResult("updateKeyframe", 7000, 250);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error updating keyframe: ${String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "removeKeyframe",
+  "Remove a keyframe from a property by keyframe index.",
+  {
+    ...LayerIdentifierSchema,
+    ...PropertyLocatorSchema,
+    ...KeyframeIdentifierSchema,
+  },
+  async (parameters) => {
+    try {
+      clearResultsFile();
+      writeCommandFile("removeKeyframe", parameters);
+      const result = await waitForBridgeResult("removeKeyframe", 7000, 250);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error removing keyframe: ${String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "setKeyframeEase",
+  "Set temporal ease for an existing keyframe using speed and influence values.",
+  {
+    ...LayerIdentifierSchema,
+    ...PropertyLocatorSchema,
+    ...KeyframeIdentifierSchema,
+    easeIn: KeyframeEaseConfigSchema,
+    easeOut: KeyframeEaseConfigSchema
+      .optional()
+      .describe("Optional outgoing ease. Defaults to the incoming ease."),
+  },
+  async (parameters) => {
+    try {
+      clearResultsFile();
+      writeCommandFile("setKeyframeEase", parameters);
+      const result = await waitForBridgeResult("setKeyframeEase", 7000, 250);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting keyframe ease: ${String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "setKeyframeInterpolation",
+  "Set the incoming and outgoing interpolation types for an existing keyframe.",
+  {
+    ...LayerIdentifierSchema,
+    ...PropertyLocatorSchema,
+    ...KeyframeIdentifierSchema,
+    inType: z
+      .enum(["LINEAR", "BEZIER", "HOLD"])
+      .describe("Incoming interpolation type."),
+    outType: z
+      .enum(["LINEAR", "BEZIER", "HOLD"])
+      .optional()
+      .describe("Optional outgoing interpolation type. Defaults to inType."),
+  },
+  async (parameters) => {
+    try {
+      clearResultsFile();
+      writeCommandFile("setKeyframeInterpolation", parameters);
+      const result = await waitForBridgeResult(
+        "setKeyframeInterpolation",
+        7000,
+        250,
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting keyframe interpolation: ${String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  "setSpatialTangents",
+  "Set spatial tangents for an existing 2D or 3D spatial keyframe.",
+  {
+    ...LayerIdentifierSchema,
+    ...PropertyLocatorSchema,
+    ...KeyframeIdentifierSchema,
+    inTangent: z
+      .array(z.number())
+      .min(2)
+      .max(3)
+      .describe("Incoming spatial tangent vector."),
+    outTangent: z
+      .array(z.number())
+      .min(2)
+      .max(3)
+      .optional()
+      .describe("Optional outgoing spatial tangent vector. Defaults to inTangent."),
+  },
+  async (parameters) => {
+    try {
+      clearResultsFile();
+      writeCommandFile("setSpatialTangents", parameters);
+      const result = await waitForBridgeResult("setSpatialTangents", 7000, 250);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: result,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting spatial tangents: ${String(error)}`,
           },
         ],
         isError: true,

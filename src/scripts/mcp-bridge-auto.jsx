@@ -1346,6 +1346,181 @@ function serializeProperty(prop, pathSegments, matchPathSegments) {
   return serialized;
 }
 
+function getInterpolationTypeName(interpolationType) {
+  if (interpolationType === KeyframeInterpolationType.LINEAR) {
+    return "LINEAR";
+  }
+  if (interpolationType === KeyframeInterpolationType.BEZIER) {
+    return "BEZIER";
+  }
+  if (interpolationType === KeyframeInterpolationType.HOLD) {
+    return "HOLD";
+  }
+  return String(interpolationType);
+}
+
+function getInterpolationTypeEnum(name) {
+  var normalized = String(name || "").toUpperCase();
+  if (normalized === "LINEAR") {
+    return KeyframeInterpolationType.LINEAR;
+  }
+  if (normalized === "BEZIER") {
+    return KeyframeInterpolationType.BEZIER;
+  }
+  if (normalized === "HOLD") {
+    return KeyframeInterpolationType.HOLD;
+  }
+  throw new Error("Unsupported interpolation type: " + name);
+}
+
+function getTemporalEaseDimensionCount(prop) {
+  if (!prop || prop.propertyValueType === undefined) {
+    return 1;
+  }
+
+  switch (prop.propertyValueType) {
+    case PropertyValueType.TwoD:
+      return 2;
+    case PropertyValueType.ThreeD:
+      return 3;
+    default:
+      return 1;
+  }
+}
+
+function isSpatialProperty(prop) {
+  return (
+    prop &&
+    (prop.propertyValueType === PropertyValueType.TwoD_SPATIAL ||
+      prop.propertyValueType === PropertyValueType.ThreeD_SPATIAL)
+  );
+}
+
+function isSpatialTangentsSupported(prop) {
+  return isSpatialProperty(prop);
+}
+
+function serializeTemporalEaseArray(easeArray) {
+  var result = [];
+  if (!easeArray) {
+    return result;
+  }
+
+  for (var i = 0; i < easeArray.length; i++) {
+    result.push({
+      speed: easeArray[i].speed,
+      influence: easeArray[i].influence,
+    });
+  }
+  return result;
+}
+
+function createTemporalEaseArray(prop, easeConfig, label) {
+  var count = getTemporalEaseDimensionCount(prop);
+  var configArray = easeConfig instanceof Array ? easeConfig : [easeConfig];
+  if (!configArray.length) {
+    throw new Error("Missing " + label + " ease configuration");
+  }
+
+  var result = [];
+  for (var i = 0; i < count; i++) {
+    var config = configArray[i] || configArray[0];
+    if (
+      !config ||
+      config.speed === undefined ||
+      config.influence === undefined
+    ) {
+      throw new Error(
+        "Each " + label + " ease entry must include speed and influence",
+      );
+    }
+    result.push(new KeyframeEase(config.speed, config.influence));
+  }
+
+  return result;
+}
+
+function serializeKeyframe(prop, keyIndex) {
+  var serialized = {
+    index: keyIndex,
+    time: prop.keyTime(keyIndex),
+    value: serializePropertyValue(prop.keyValue(keyIndex)),
+    inInterpolationType: getInterpolationTypeName(
+      prop.keyInInterpolationType(keyIndex),
+    ),
+    outInterpolationType: getInterpolationTypeName(
+      prop.keyOutInterpolationType(keyIndex),
+    ),
+    inTemporalEase: serializeTemporalEaseArray(prop.keyInTemporalEase(keyIndex)),
+    outTemporalEase: serializeTemporalEaseArray(
+      prop.keyOutTemporalEase(keyIndex),
+    ),
+  };
+
+  if (isSpatialTangentsSupported(prop)) {
+    serialized.inSpatialTangent = prop.keyInSpatialTangent(keyIndex);
+    serialized.outSpatialTangent = prop.keyOutSpatialTangent(keyIndex);
+    try {
+      serialized.roving = prop.keyRoving(keyIndex);
+    } catch (rovingError) {}
+  }
+
+  return serialized;
+}
+
+function ensureValidKeyIndex(prop, keyIndex) {
+  if (!(keyIndex > 0 && keyIndex <= prop.numKeys)) {
+    throw new Error("Keyframe index out of bounds: " + keyIndex);
+  }
+}
+
+function captureKeyframeState(prop, keyIndex) {
+  var state = {
+    time: prop.keyTime(keyIndex),
+    value: prop.keyValue(keyIndex),
+    inInterpolationType: prop.keyInInterpolationType(keyIndex),
+    outInterpolationType: prop.keyOutInterpolationType(keyIndex),
+    inTemporalEase: prop.keyInTemporalEase(keyIndex),
+    outTemporalEase: prop.keyOutTemporalEase(keyIndex),
+  };
+
+  if (isSpatialTangentsSupported(prop)) {
+    state.inSpatialTangent = prop.keyInSpatialTangent(keyIndex);
+    state.outSpatialTangent = prop.keyOutSpatialTangent(keyIndex);
+    try {
+      state.roving = prop.keyRoving(keyIndex);
+    } catch (rovingError) {}
+  }
+
+  return state;
+}
+
+function restoreKeyframeState(prop, keyIndex, state) {
+  prop.setInterpolationTypeAtKey(
+    keyIndex,
+    state.inInterpolationType,
+    state.outInterpolationType,
+  );
+  prop.setTemporalEaseAtKey(
+    keyIndex,
+    state.inTemporalEase,
+    state.outTemporalEase,
+  );
+
+  if (isSpatialTangentsSupported(prop)) {
+    prop.setSpatialTangentsAtKey(
+      keyIndex,
+      state.inSpatialTangent,
+      state.outSpatialTangent,
+    );
+    if (state.roving !== undefined) {
+      try {
+        prop.setRovingAtKey(keyIndex, state.roving);
+      } catch (rovingError) {}
+    }
+  }
+}
+
 function findChildProperty(parent, segment) {
   if (!parent || !segment) {
     return null;
@@ -1703,6 +1878,255 @@ function setPropertyKeyframe(args) {
       success: false,
       message:
         "Error setting property keyframe: " +
+        e.toString() +
+        " (Line: " +
+        e.line +
+        ")",
+    });
+  }
+}
+
+function listPropertyKeyframes(args) {
+  try {
+    var comp = getCompByIndex(args.compIndex);
+    var layer = getLayerByIndex(comp, args.layerIndex);
+    var resolved = resolveProperty(layer, args.propertyPath, args.propertyName);
+    var property = resolved.property;
+    var keyframes = [];
+
+    for (var i = 1; i <= property.numKeys; i++) {
+      keyframes.push(serializeKeyframe(property, i));
+    }
+
+    return JSON.stringify(
+      {
+        status: "success",
+        layer: getLayerSummary(layer),
+        property: serializeProperty(
+          property,
+          resolved.pathSegments,
+          resolved.matchPathSegments,
+        ),
+        keyframes: keyframes,
+      },
+      null,
+      2,
+    );
+  } catch (e) {
+    return JSON.stringify({
+      success: false,
+      message:
+        "Error listing property keyframes: " +
+        e.toString() +
+        " (Line: " +
+        e.line +
+        ")",
+    });
+  }
+}
+
+function updateKeyframe(args) {
+  try {
+    var comp = getCompByIndex(args.compIndex);
+    var layer = getLayerByIndex(comp, args.layerIndex);
+    var resolved = resolveProperty(layer, args.propertyPath, args.propertyName);
+    var property = resolved.property;
+    ensureValidKeyIndex(property, args.keyIndex);
+
+    if (args.value === undefined && args.timeInSeconds === undefined) {
+      throw new Error("Provide value and/or timeInSeconds to update a keyframe");
+    }
+
+    var nextValue =
+      args.value !== undefined ? args.value : property.keyValue(args.keyIndex);
+
+    if (args.timeInSeconds === undefined) {
+      property.setValueAtKey(args.keyIndex, nextValue);
+      return JSON.stringify(
+        {
+          status: "success",
+          message: "Keyframe updated successfully",
+          keyframe: serializeKeyframe(property, args.keyIndex),
+        },
+        null,
+        2,
+      );
+    }
+
+    var keyframeState = captureKeyframeState(property, args.keyIndex);
+    property.removeKey(args.keyIndex);
+    property.setValueAtTime(args.timeInSeconds, nextValue);
+    var newKeyIndex = property.nearestKeyIndex(args.timeInSeconds);
+    restoreKeyframeState(property, newKeyIndex, keyframeState);
+
+    return JSON.stringify(
+      {
+        status: "success",
+        message: "Keyframe updated successfully",
+        keyframe: serializeKeyframe(property, newKeyIndex),
+      },
+      null,
+      2,
+    );
+  } catch (e) {
+    return JSON.stringify({
+      success: false,
+      message:
+        "Error updating keyframe: " + e.toString() + " (Line: " + e.line + ")",
+    });
+  }
+}
+
+function removeKeyframe(args) {
+  try {
+    var comp = getCompByIndex(args.compIndex);
+    var layer = getLayerByIndex(comp, args.layerIndex);
+    var resolved = resolveProperty(layer, args.propertyPath, args.propertyName);
+    var property = resolved.property;
+    ensureValidKeyIndex(property, args.keyIndex);
+    var removedKeyframe = serializeKeyframe(property, args.keyIndex);
+    property.removeKey(args.keyIndex);
+
+    return JSON.stringify(
+      {
+        status: "success",
+        message: "Keyframe removed successfully",
+        removedKeyframe: removedKeyframe,
+        remainingKeyframes: property.numKeys,
+      },
+      null,
+      2,
+    );
+  } catch (e) {
+    return JSON.stringify({
+      success: false,
+      message:
+        "Error removing keyframe: " + e.toString() + " (Line: " + e.line + ")",
+    });
+  }
+}
+
+function setKeyframeEase(args) {
+  try {
+    var comp = getCompByIndex(args.compIndex);
+    var layer = getLayerByIndex(comp, args.layerIndex);
+    var resolved = resolveProperty(layer, args.propertyPath, args.propertyName);
+    var property = resolved.property;
+    ensureValidKeyIndex(property, args.keyIndex);
+
+    var easeIn = createTemporalEaseArray(property, args.easeIn, "easeIn");
+    var easeOut = createTemporalEaseArray(
+      property,
+      args.easeOut !== undefined ? args.easeOut : args.easeIn,
+      "easeOut",
+    );
+
+    property.setTemporalEaseAtKey(args.keyIndex, easeIn, easeOut);
+
+    return JSON.stringify(
+      {
+        status: "success",
+        message: "Keyframe ease updated successfully",
+        keyframe: serializeKeyframe(property, args.keyIndex),
+      },
+      null,
+      2,
+    );
+  } catch (e) {
+    return JSON.stringify({
+      success: false,
+      message:
+        "Error setting keyframe ease: " +
+        e.toString() +
+        " (Line: " +
+        e.line +
+        ")",
+    });
+  }
+}
+
+function setKeyframeInterpolation(args) {
+  try {
+    var comp = getCompByIndex(args.compIndex);
+    var layer = getLayerByIndex(comp, args.layerIndex);
+    var resolved = resolveProperty(layer, args.propertyPath, args.propertyName);
+    var property = resolved.property;
+    ensureValidKeyIndex(property, args.keyIndex);
+
+    var inType = getInterpolationTypeEnum(args.inType);
+    var outType = getInterpolationTypeEnum(
+      args.outType !== undefined ? args.outType : args.inType,
+    );
+
+    if (!property.isInterpolationTypeValid(inType)) {
+      throw new Error("Interpolation type " + args.inType + " is not valid");
+    }
+    if (!property.isInterpolationTypeValid(outType)) {
+      throw new Error(
+        "Interpolation type " +
+          (args.outType !== undefined ? args.outType : args.inType) +
+          " is not valid",
+      );
+    }
+
+    property.setInterpolationTypeAtKey(args.keyIndex, inType, outType);
+
+    return JSON.stringify(
+      {
+        status: "success",
+        message: "Keyframe interpolation updated successfully",
+        keyframe: serializeKeyframe(property, args.keyIndex),
+      },
+      null,
+      2,
+    );
+  } catch (e) {
+    return JSON.stringify({
+      success: false,
+      message:
+        "Error setting keyframe interpolation: " +
+        e.toString() +
+        " (Line: " +
+        e.line +
+        ")",
+    });
+  }
+}
+
+function setSpatialTangents(args) {
+  try {
+    var comp = getCompByIndex(args.compIndex);
+    var layer = getLayerByIndex(comp, args.layerIndex);
+    var resolved = resolveProperty(layer, args.propertyPath, args.propertyName);
+    var property = resolved.property;
+    ensureValidKeyIndex(property, args.keyIndex);
+
+    if (!isSpatialTangentsSupported(property)) {
+      throw new Error(
+        "Property '" + property.name + "' does not support spatial tangents.",
+      );
+    }
+
+    property.setSpatialTangentsAtKey(
+      args.keyIndex,
+      args.inTangent,
+      args.outTangent !== undefined ? args.outTangent : args.inTangent,
+    );
+
+    return JSON.stringify(
+      {
+        status: "success",
+        message: "Spatial tangents updated successfully",
+        keyframe: serializeKeyframe(property, args.keyIndex),
+      },
+      null,
+      2,
+    );
+  } catch (e) {
+    return JSON.stringify({
+      success: false,
+      message:
+        "Error setting spatial tangents: " +
         e.toString() +
         " (Line: " +
         e.line +
@@ -3132,6 +3556,36 @@ function executeCommand(command, args) {
         logToPanel("Calling setPropertyKeyframe function...");
         result = setPropertyKeyframe(args);
         logToPanel("Returned from setPropertyKeyframe.");
+        break;
+      case "listPropertyKeyframes":
+        logToPanel("Calling listPropertyKeyframes function...");
+        result = listPropertyKeyframes(args);
+        logToPanel("Returned from listPropertyKeyframes.");
+        break;
+      case "updateKeyframe":
+        logToPanel("Calling updateKeyframe function...");
+        result = updateKeyframe(args);
+        logToPanel("Returned from updateKeyframe.");
+        break;
+      case "removeKeyframe":
+        logToPanel("Calling removeKeyframe function...");
+        result = removeKeyframe(args);
+        logToPanel("Returned from removeKeyframe.");
+        break;
+      case "setKeyframeEase":
+        logToPanel("Calling setKeyframeEase function...");
+        result = setKeyframeEase(args);
+        logToPanel("Returned from setKeyframeEase.");
+        break;
+      case "setKeyframeInterpolation":
+        logToPanel("Calling setKeyframeInterpolation function...");
+        result = setKeyframeInterpolation(args);
+        logToPanel("Returned from setKeyframeInterpolation.");
+        break;
+      case "setSpatialTangents":
+        logToPanel("Calling setSpatialTangents function...");
+        result = setSpatialTangents(args);
+        logToPanel("Returned from setSpatialTangents.");
         break;
       case "setPropertyExpression":
         logToPanel("Calling setPropertyExpression function...");
